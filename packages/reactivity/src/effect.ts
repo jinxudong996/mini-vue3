@@ -1,5 +1,6 @@
 import { ComputedRefImpl } from "./computed";
 import { Dep, createDep } from "./dep";
+import { extend, isArray } from "@vue/shared";
 type KeyToDepMap = Map<any, Dep>;
 
 export type EffectScheduler = (...args: any[]) => any;
@@ -88,16 +89,30 @@ export function triggerEffect(effect: ReactiveEffect) {
     effect.run();
   }
 }
+
+export interface ReactiveEffectOptions {
+  lazy?: boolean;
+  scheduler?: EffectScheduler;
+}
+
 /**
  * effect 函数
  * @param fn 执行方法
  * @returns 以 ReactiveEffect 实例为 this 的执行函数
  */
-export function effect<T = any>(fn: () => T) {
+export function effect<T = any>(fn: () => T, options?: ReactiveEffectOptions) {
   // 生成 ReactiveEffect 实例
   const _effect = new ReactiveEffect(fn);
-  // 执行 run 函数
-  _effect.run();
+
+  // 存在 options，则合并配置对象
+  if (options) {
+    extend(_effect, options);
+  }
+
+  if (!options || !options.lazy) {
+    // 执行 run 函数
+    _effect.run();
+  }
 }
 
 /**
@@ -119,6 +134,7 @@ export class ReactiveEffect<T = any> {
     // 执行 fn 函数
     return this.fn();
   }
+  stop() {}
 }
 
 /**

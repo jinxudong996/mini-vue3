@@ -68,6 +68,34 @@ var Vue = (function (exports) {
         return dep;
     };
 
+    // export * from './toDisplayString'
+    /**
+     * 判断是否为一个对象
+     */
+    var isObject = function (val) {
+        return val !== null && typeof val === "object";
+    };
+    /**
+     * 对比两个数据是否发生了改变
+     */
+    var hasChanged = function (value, oldValue) {
+        return !Object.is(value, oldValue);
+    };
+    /**
+     * 是否为一个 function
+     */
+    var isFunction = function (val) {
+        return typeof val === "function";
+    };
+    /**
+     * Object.assign
+     */
+    var extend = Object.assign;
+    /**
+     * 只读的空对象
+     */
+    var EMPTY_OBJ = {};
+
     /**
      * 收集所有依赖的 WeakMap 实例：
      * 1. `key`：响应性对象
@@ -179,11 +207,17 @@ var Vue = (function (exports) {
      * @param fn 执行方法
      * @returns 以 ReactiveEffect 实例为 this 的执行函数
      */
-    function effect(fn) {
+    function effect(fn, options) {
         // 生成 ReactiveEffect 实例
         var _effect = new ReactiveEffect(fn);
-        // 执行 run 函数
-        _effect.run();
+        // 存在 options，则合并配置对象
+        if (options) {
+            extend(_effect, options);
+        }
+        if (!options || !options.lazy) {
+            // 执行 run 函数
+            _effect.run();
+        }
     }
     /**
      * 单例的，当前的 effect
@@ -204,6 +238,7 @@ var Vue = (function (exports) {
             // 执行 fn 函数
             return this.fn();
         };
+        ReactiveEffect.prototype.stop = function () { };
         return ReactiveEffect;
     }());
     /**
@@ -252,25 +287,6 @@ var Vue = (function (exports) {
     };
 
     /**
-     * 判断是否为一个对象
-     */
-    var isObject = function (val) {
-        return val !== null && typeof val === "object";
-    };
-    /**
-     * 对比两个数据是否发生了改变
-     */
-    var hasChanged = function (value, oldValue) {
-        return !Object.is(value, oldValue);
-    };
-    /**
-     * 是否为一个 function
-     */
-    var isFunction = function (val) {
-        return typeof val === "function";
-    };
-
-    /**
      * 响应性 Map 缓存对象
      * key：target
      * val：proxy
@@ -297,6 +313,8 @@ var Vue = (function (exports) {
         }
         // 未被代理则生成 proxy 实例
         var proxy = new Proxy(target, baseHandlers);
+        // 为 Reactive 增加标记
+        proxy["__v_isReactive" /* ReactiveFlags.IS_REACTIVE */] = true;
         // 缓存代理对象
         proxyMap.set(target, proxy);
         return proxy;
@@ -307,6 +325,12 @@ var Vue = (function (exports) {
     var toReactive = function (value) {
         return isObject(value) ? reactive(value) : value;
     };
+    /**
+     * 判断一个数据是否为 Reactive
+     */
+    function isReactive(value) {
+        return !!(value && value["__v_isReactive" /* ReactiveFlags.IS_REACTIVE */]);
+    }
 
     /**
      * ref 函数
@@ -435,10 +459,143 @@ var Vue = (function (exports) {
         return cRef;
     }
 
+    // 对应 promise 的 pending 状态
+    var isFlushPending = false;
+    /**
+     * promise.resolve()
+     */
+    var resolvedPromise = Promise.resolve();
+    /**
+     * 待执行的任务队列
+     */
+    var pendingPreFlushCbs = [];
+    /**
+     * 队列预处理函数
+     */
+    function queuePreFlushCb(cb) {
+        queueCb(cb, pendingPreFlushCbs);
+    }
+    /**
+     * 队列处理函数
+     */
+    function queueCb(cb, pendingQueue) {
+        // 将所有的回调函数，放入队列中
+        pendingQueue.push(cb);
+        queueFlush();
+    }
+    /**
+     * 依次处理队列中执行函数
+     */
+    function queueFlush() {
+        if (!isFlushPending) {
+            isFlushPending = true;
+            resolvedPromise.then(flushJobs);
+        }
+    }
+    /**
+     * 处理队列
+     */
+    function flushJobs() {
+        isFlushPending = false;
+        flushPreFlushCbs();
+    }
+    /**
+     * 依次处理队列中的任务
+     */
+    function flushPreFlushCbs() {
+        if (pendingPreFlushCbs.length) {
+            // 去重
+            var activePreFlushCbs = __spreadArray([], __read(new Set(pendingPreFlushCbs)), false);
+            // 清空就数据
+            pendingPreFlushCbs.length = 0;
+            // 循环处理
+            for (var i = 0; i < activePreFlushCbs.length; i++) {
+                activePreFlushCbs[i]();
+            }
+        }
+    }
+
+    /**
+     * 指定的 watch 函数
+     * @param source 监听的响应性数据
+     * @param cb 回调函数
+     * @param options 配置对象
+     * @returns
+     */
+    function watch(source, cb, options) {
+        return doWatch(source, cb, options);
+    }
+    function doWatch(source, cb, _a) {
+        var _b = _a === void 0 ? EMPTY_OBJ : _a, immediate = _b.immediate, deep = _b.deep;
+        // 触发 getter 的指定函数
+        var getter;
+        // 判断 source 的数据类型
+        if (isReactive(source)) {
+            // 指定 getter
+            getter = function () { return source; };
+            // 深度
+            deep = true;
+        }
+        else {
+            getter = function () { };
+        }
+        // 存在回调函数和deep
+        if (cb && deep) {
+            // TODO
+            var baseGetter_1 = getter;
+            getter = function () { return traverse(baseGetter_1()); };
+        }
+        // 旧值
+        var oldValue = {};
+        // job 执行方法
+        var job = function () {
+            if (cb) {
+                // watch(source, cb)
+                var newValue = effect.run();
+                if (deep || hasChanged(newValue, oldValue)) {
+                    cb(newValue, oldValue);
+                    oldValue = newValue;
+                }
+            }
+        };
+        // 调度器
+        var scheduler = function () { return queuePreFlushCb(job); };
+        var effect = new ReactiveEffect(getter, scheduler);
+        if (cb) {
+            if (immediate) {
+                job();
+            }
+            else {
+                oldValue = effect.run();
+            }
+        }
+        else {
+            effect.run();
+        }
+        return function () {
+            effect.stop();
+        };
+    }
+    /**
+     * 依次执行 getter，从而触发依赖收集
+     */
+    function traverse(value, seen) {
+        if (!isObject(value)) {
+            return value;
+        }
+        seen = seen || new Set();
+        seen.add(value);
+        for (var key in value) {
+            traverse(value[key], seen);
+        }
+        return value;
+    }
+
     exports.computed = computed;
     exports.effect = effect;
     exports.reactive = reactive;
     exports.ref = ref;
+    exports.watch = watch;
 
     Object.defineProperty(exports, '__esModule', { value: true });
 
